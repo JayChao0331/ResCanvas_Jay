@@ -29,6 +29,7 @@ from routes.admin import admin_bp
 from routes.frontend import frontend_bp
 from routes.analytics import analytics_bp
 from routes.export import export_bp
+from routes.search_ai import search_ai_bp
 from services.db import redis_client
 from services.canvas_counter import get_canvas_draw_count
 from services.graphql_service import commit_transaction_via_graphql
@@ -191,6 +192,7 @@ app.register_blueprint(notifications_v1_bp)
 app.register_blueprint(users_v1_bp)
 app.register_blueprint(stamps_bp, url_prefix='/api')
 app.register_blueprint(templates_v1_bp)
+app.register_blueprint(search_ai_bp)
 
 # Frontend serving must be last to avoid route conflicts
 app.register_blueprint(frontend_bp)
