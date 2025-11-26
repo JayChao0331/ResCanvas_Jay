@@ -14,13 +14,15 @@ from config import QDRANT_HOST, QDRANT_PORT, QDRANT_COLLECTION_NAME, EMBEDDING_D
 
 logger = logging.getLogger(__name__)
 
-# Global Qdrant client (lazy initialization)
+# Global Qdrant client 
 _qdrant_client: Optional[QdrantClient] = None
 
 
 def get_qdrant_client() -> QdrantClient:
-    """Get or create Qdrant client instance."""
+    # Get Qdrant client 
     global _qdrant_client
+
+    # If client not initialized, create it
     if _qdrant_client is None:
         try:
             _qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
@@ -33,19 +35,20 @@ def get_qdrant_client() -> QdrantClient:
 
 
 def _ensure_collection_exists():
-    """Create collection if it doesn't exist."""
+    # Create collection if it doesn't exist.
     client = _qdrant_client
     try:
-        # Check if collection exists
+        # Check if collection exists (should be a single collection name)
         collections = client.get_collections().collections
         collection_names = [c.name for c in collections]
         
+        # If it doesnt exist create Qdrant collection
         if QDRANT_COLLECTION_NAME not in collection_names:
             logger.info(f"Creating Qdrant collection: {QDRANT_COLLECTION_NAME}")
             client.create_collection(
                 collection_name=QDRANT_COLLECTION_NAME,
                 vectors_config=VectorParams(
-                    size=EMBEDDING_DIMENSION,
+                    size=EMBEDDING_DIMENSION, # e.g., 512
                     distance=Distance.COSINE  # Cosine similarity for normalized embeddings
                 )
             )
@@ -62,19 +65,14 @@ def store_canvas_embedding(
     embedding: np.ndarray,
     metadata: Optional[Dict[str, Any]] = None
 ) -> bool:
-    """
-    Store or update a canvas embedding in Qdrant.
-    
-    Args:
-        room_id: Unique identifier for the canvas/room
-        embedding: 512-dimensional vector from CLIP model
-        metadata: Additional metadata (name, description, type, owner, etc.)
-    
-    Returns:
-        True if successful, False otherwise
-    """
+    # Store or update a canvas embedding in Qdrant.x
     try:
+        # Get Qdrant client
         client = get_qdrant_client()
+        
+        # Ensure embedding is a numpy array
+        if not isinstance(embedding, np.ndarray):
+            embedding = np.array(embedding, dtype=np.float32)
         
         # Ensure embedding is the right shape and type
         if embedding.ndim == 2:
@@ -88,16 +86,17 @@ def store_canvas_embedding(
         payload = metadata or {}
         payload['room_id'] = room_id
         
-        # Use room_id as the point ID (convert to hash for Qdrant)
-        point_id = hash(room_id) & 0x7FFFFFFFFFFFFFFF  # Ensure positive int
+        # Use hashlib for consistent point IDs across worker restarts
+        import hashlib
+        point_id = int(hashlib.md5(room_id.encode()).hexdigest()[:15], 16)
         
-        # Upsert the point (will update if exists, insert if new)
+        # Update the room (will update if exists, insert if new)
         client.upsert(
             collection_name=QDRANT_COLLECTION_NAME,
             points=[
                 PointStruct(
                     id=point_id,
-                    vector=embedding.tolist(),
+                    vector=embedding.tolist(), # Convert to list for Qdrant
                     payload=payload
                 )
             ]
@@ -117,19 +116,9 @@ def search_by_embedding(
     filters: Optional[Dict[str, Any]] = None,
     score_threshold: float = 0.0
 ) -> List[Dict[str, Any]]:
-    """
-    Search for similar canvases using vector similarity.
-    
-    Args:
-        query_embedding: 512-dimensional query vector from CLIP
-        top_k: Number of results to return
-        filters: Optional filters (e.g., {"type": "public", "owner": "user123"})
-        score_threshold: Minimum similarity score (0.0 to 1.0)
-    
-    Returns:
-        List of dicts with keys: room_id, score, and metadata fields
-    """
+    # Search for similar canvases using vector similarity.
     try:
+        # Get Qdrant client
         client = get_qdrant_client()
         
         # Ensure embedding is the right shape
@@ -154,7 +143,7 @@ def search_by_embedding(
         # Perform vector search
         search_result = client.search(
             collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_embedding.tolist(),
+            query_vector=query_embedding.tolist(), # Convert to list for Qdrant
             limit=top_k,
             query_filter=qdrant_filter,
             score_threshold=score_threshold
@@ -183,28 +172,20 @@ def update_canvas_embedding(
     new_embedding: np.ndarray,
     metadata: Optional[Dict[str, Any]] = None
 ) -> bool:
-    """
-    Update an existing canvas embedding.
-    
-    This is just an alias for store_canvas_embedding since upsert handles both.
-    """
+    # Update an existing canvas embedding.
     return store_canvas_embedding(room_id, new_embedding, metadata)
 
 
 def delete_canvas_embedding(room_id: str) -> bool:
-    """
-    Delete a canvas embedding from Qdrant.
-    
-    Args:
-        room_id: Unique identifier for the canvas/room to delete
-    
-    Returns:
-        True if successful, False otherwise
-    """
+    # Delete a canvas embedding from Qdrant.
     try:
+        # Get Qdrant client
         client = get_qdrant_client()
-        point_id = hash(room_id) & 0x7FFFFFFFFFFFFFFF
-        
+
+        import hashlib
+        point_id = int(hashlib.md5(room_id.encode()).hexdigest()[:15], 16)
+
+        # Delete the room
         client.delete(
             collection_name=QDRANT_COLLECTION_NAME,
             points_selector=[point_id]
@@ -219,16 +200,9 @@ def delete_canvas_embedding(room_id: str) -> bool:
 
 
 def batch_store_embeddings(embeddings: List[Dict[str, Any]]) -> int:
-    """
-    Store multiple embeddings in batch (more efficient).
-    
-    Args:
-        embeddings: List of dicts with keys: room_id, embedding, metadata
-    
-    Returns:
-        Number of successfully stored embeddings
-    """
+    # Store multiple embeddings in batch (more efficient).
     try:
+        # Get Qdrant client
         client = get_qdrant_client()
         points = []
         
@@ -249,7 +223,10 @@ def batch_store_embeddings(embeddings: List[Dict[str, Any]]) -> int:
             payload = metadata.copy()
             payload['room_id'] = room_id
             
-            point_id = hash(room_id) & 0x7FFFFFFFFFFFFFFF
+            #point_id = hash(room_id) & 0x7FFFFFFFFFFFFFFF
+            # Use hashlib for consistent point IDs across worker restarts
+            import hashlib
+            point_id = int(hashlib.md5(room_id.encode()).hexdigest()[:15], 16)
             
             points.append(
                 PointStruct(
@@ -275,8 +252,9 @@ def batch_store_embeddings(embeddings: List[Dict[str, Any]]) -> int:
 
 
 def get_collection_stats() -> Dict[str, Any]:
-    """Get statistics about the vector collection."""
+    # Get statistics about the vector collection.
     try:
+        # Get Qdrant client
         client = get_qdrant_client()
         collection_info = client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
         

@@ -9,6 +9,7 @@ import io
 from PIL import Image
 import tempfile
 import os
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ _vector_search_service = None
 
 
 def _get_services():
-    """Lazy load embedding and vector search services."""
+    # Load embedding and vector search services.
     global _embedding_service, _vector_search_service
     
     if _embedding_service is None or _vector_search_service is None:
@@ -62,8 +63,8 @@ def text_search(query: str, rooms: List[Dict[str, Any]], top_n: int = DEFAULT_TO
         # Search vector database for similar canvases
         vector_results = vector_svc.search_by_embedding(
             query_embedding=query_embedding,
-            top_k=top_n * 2,  # Get extra results to filter by visibility
-            score_threshold=0.0
+            top_k=top_n,  # Get extra results to filter by visibility
+            score_threshold=0.0 # (Optional) Minimum score for results
         )
         
         # Create a map of room_id -> score from vector results
@@ -121,10 +122,49 @@ def image_search(image_b64: str, rooms: List[Dict[str, Any]], q: str | None = No
                 image.save(tmp_path, 'PNG')
             
             # Generate embedding for the image
-            query_embedding = embed_svc.embed_image(tmp_path)  # Returns (1, 512)
-            
+            image_embedding = embed_svc.embed_image(tmp_path)  # Returns (1, 512)
+
             # Clean up temp file
             os.unlink(tmp_path)
+
+            # If a text query is provided, generate text embedding and combine
+            if q:
+                try:
+                    text_embedding = embed_svc.embed_text([q])  # (1, 512)
+                except Exception as e:
+                    logger.warning(f"Failed to generate text embedding for hybrid search: {e}")
+                    text_embedding = None
+
+                if text_embedding is not None and getattr(text_embedding, 'size', 0) > 0:
+                    # Flatten to 1D arrays
+                    img_vec = np.asarray(image_embedding).reshape(-1).astype(np.float32)
+                    txt_vec = np.asarray(text_embedding).reshape(-1).astype(np.float32)
+
+                    # L2-normalize
+                    # img_norm = np.linalg.norm(img_vec)
+                    # txt_norm = np.linalg.norm(txt_vec)
+                    # if img_norm > 0:
+                    #     img_vec = img_vec / img_norm
+                    # if txt_norm > 0:
+                    #     txt_vec = txt_vec / txt_norm
+
+                    # Weighted combination (image-heavy by default)
+                    weight_image = 0.6
+                    weight_text = 0.4
+                    combined = weight_image * img_vec + weight_text * txt_vec
+
+                    # Re-normalize combined vector
+                    comb_norm = np.linalg.norm(combined)
+                    if comb_norm > 0:
+                        combined = (combined / comb_norm).astype(np.float32)
+
+                    query_embedding = combined.reshape(1, -1)
+                    logger.info("Performed hybrid (image+text) embedding combination (image_weight=%s,text_weight=%s)", weight_image, weight_text)
+                else:
+                    # fall back to image-only embedding
+                    query_embedding = image_embedding
+            else:
+                query_embedding = image_embedding
             
         except Exception as e:
             logger.error(f"Failed to process image: {e}")
@@ -137,8 +177,8 @@ def image_search(image_b64: str, rooms: List[Dict[str, Any]], q: str | None = No
         # Search vector database for similar canvases
         vector_results = vector_svc.search_by_embedding(
             query_embedding=query_embedding,
-            top_k=top_n * 2,  # Get extra results to filter by visibility
-            score_threshold=0.0
+            top_k=top_n,  # Get extra results to filter by visibility
+            score_threshold=0.0 # (Optional) Minimum score for results
         )
         
         # Create a map of room_id -> score from vector results
@@ -175,20 +215,3 @@ def _fallback_random_search(rooms: List[Dict[str, Any]], top_n: int, seed: int |
     scored = [{**r, "score": rng.random()} for r in rooms]
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:top_n]
-
-
-# Keep old stub implementations commented for reference
-# def text_search(query: str, rooms: List[Dict[str, Any]], top_n: int = DEFAULT_TOP_N, seed: int | None = None) -> List[Dict[str, Any]]:
-#     """Prototype text search: random scores + ranking."""
-#     rng = random.Random(seed) if seed is not None else random
-#     scored = [{**r, "score": rng.random()} for r in rooms]
-#     scored.sort(key=lambda x: x["score"], reverse=True)
-#     return scored[:top_n]
-
-# def image_search(image_b64: str, rooms: List[Dict[str, Any]], q: str | None = None, top_n: int = DEFAULT_TOP_N, seed: int | None = None) -> List[Dict[str, Any]]:
-#     """Prototype image search: random scores + ranking."""
-#     rng = random.Random(seed) if seed is not None else random
-#     scored = [{**r, "score": rng.random()} for r in rooms]
-#     scored.sort(key=lambda x: x["score"], reverse=True)
-#     return scored[:top_n]
-

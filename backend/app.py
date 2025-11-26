@@ -12,6 +12,9 @@ from config import *
 
 app = Flask(__name__)
 
+# Allow large request bodies for thumbnail uploads (up to 20MB)
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024
+
 # Initialize rate limiting BEFORE importing routes (routes use limiter decorators)
 from middleware.rate_limit import init_limiter, rate_limit_error_handler
 limiter = init_limiter(app)
